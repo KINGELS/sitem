@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tavla</title>
+<style>
+:root{--koyu:#2a1c12;--ahsap:#5b3a22;--kemik:#e4d5b3;--cini:#1c6b66;--pirinc:#c29a4b}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--koyu);color:var(--kemik);font-family:Georgia,"Times New Roman",serif;display:flex;flex-direction:column;align-items:center;padding:14px}
+.w{width:100%;max-width:860px}
+header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px}
+h1{font-size:2.2rem;font-weight:normal;letter-spacing:.06em;margin:0}
+#score{font-size:1.1rem}
+#status{min-height:1.8em;margin:8px 0;font-size:1.1rem;line-height:1.6}
+svg#b{width:100%;height:auto;display:block;border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+.hit{fill:transparent;cursor:pointer}
+.tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0}
+#dice{display:flex;gap:8px;min-width:100px}
+.d{width:44px;height:44px}.d.used{opacity:.25}
+button{font:inherit;color:var(--kemik);background:var(--ahsap);border:1px solid var(--pirinc);border-radius:8px;padding:8px 14px;cursor:pointer}
+button:hover:not(:disabled){background:#7a5231}
+button:disabled{opacity:.4;cursor:default}
+button:focus-visible,summary:focus-visible{outline:3px solid #ffd36b;outline-offset:2px}
+#roll:not(:disabled){background:var(--pirinc);color:var(--koyu);font-weight:bold}
+details{margin-top:6px;line-height:1.7;max-width:70ch}
+summary{cursor:pointer}
+</style>
+</head>
+<body>
+<div class="w">
+<header><h1>Tavla</h1><div id="score"></div></header>
+<div id="status" aria-live="polite"></div>
+<svg id="b" viewBox="0 0 760 540" role="img" aria-label="Tavla tahtası"></svg>
+<div class="tools">
+<div id="dice"></div>
+<button id="roll">Zar at</button>
+<button id="undo">Geri al</button>
+<button id="nw">Yeni oyun</button>
+<button id="md"></button>
+</div>
+<details>
+<summary>Nasıl oynanır?</summary>
+<p>Beyaz pullar saat yönünün tersine, siyah pullar saat yönünde ilerler. Beyazın son bölgesi sağ alttaki, siyahın son bölgesi sağ üstteki altı yuvadır.</p>
+<p>Zar at, sonra bir pul seç; gidebileceği yerler altın renkte yanar, birine tıkla. İki zar ayrı ayrı oynanır, çift gelirse dört hamle yapılır.</p>
+<p>Rakibin tek pulunun olduğu yuvaya gidersen onu kırarsın; kırık pul ortadaki bara gider ve oyuna oradan girmek zorundadır. İki veya daha fazla rakip pulu olan yuvaya gidilemez.</p>
+<p>Bütün pulların son bölgeye gelince pul toplayabilirsin: pulu seç ve sağdaki kutuya tıkla. İlk bitiren kazanır; rakip hiç pul toplayamadıysa mars olur ve 2 puan alırsın.</p>
+</details>
+</div>
+<script>
+const $=s=>document.querySelector(s),SG=[1,-1],NAME=()=>["Beyaz",mode=="ai"?"Bilgisayar":"Siyah"];
+let st,turn,dice,diceAll,phase,sel,LM,hist,mode="ai",gid=0,score=[0,0],msg="",over=false;
+const rnd=()=>1+Math.floor(Math.random()*6);
+const cnt=(s,pl,i)=>Math.max(0,s.p[i]*SG[pl]);
+const opp=(s,pl,i)=>Math.max(0,-s.p[i]*SG[pl]);
+const rm=(a,d)=>{const k=a.indexOf(d);return a.filter((_,j)=>j!=k)};
+const human=()=>mode=="2p"||turn==0;
+const later=(f,ms)=>{const g=gid;setTimeout(()=>{if(g==gid)f()},ms)};
+function init(){const p=Array(25).fill(0);p[24]=2;p[13]=5;p[8]=3;p[6]=5;p[1]=-2;p[12]=-5;p[17]=-3;p[19]=-5;return{p,bar:[0,0],off:[0,0]}}
+
+/* ---- Kurallar ---- */
+function canOff(s,pl){if(s.bar[pl])return false;for(let i=1;i<=24;i++)if(cnt(s,pl,i)&&(pl?i<19:i>6))return false;return true}
+function gen(s,pl,d){
+  const r=[],dir=pl?1:-1;
+  if(s.bar[pl]){const t=pl?d:25-d;if(opp(s,pl,t)<2)r.push({f:"b",t});return r}
+  const ho=canOff(s,pl);
+  for(let i=1;i<=24;i++){
+    if(!cnt(s,pl,i))continue;
+    const t=i+dir*d;
+    if(t>=1&&t<=24){if(opp(s,pl,t)<2)r.push({f:i,t})}
+    else if(ho){
+      if(t==0||t==25)r.push({f:i,t:"o"});
+      else{let far=false;for(let j=1;j<=24;j++)if(cnt(s,pl,j)&&(pl?j<i:j>i)){far=true;break}
+        if(!far)r.push({f:i,t:"o"})}
+    }
+  }
+  return r;
+}
+function app(s,pl,m){
+  const n={p:s.p.slice(),bar:s.bar.slice(),off:s.off.slice()},g=SG[pl];
+  if(m.f=="b")n.bar[pl]--;else n.p[m.f]-=g;
+  if(m.t=="o")n.off[pl]++;
+  else{if(opp(n,pl,m.t)==1){n.p[m.t]=0;n.bar[1-pl]++}n.p[m.t]+=g}
+  return n;
+}
+function maxLen(s,pl,dc){
+  let best=0;
+  for(const d of new Set(dc)){const r=rm(dc,d);
+    for(const m of gen(s,pl,d)){best=Math.max(best,1+maxLen(app(s,pl,m),pl,r));if(best==dc.length)return best}}
+  return best;
+}
+function legal(s,pl,dc){
+  const L=maxLen(s,pl,dc);if(!L)return[];let out=[];
+  for(const d of new Set(dc)){const r=rm(dc,d);
+    for(const m of gen(s,pl,d))if(1+maxLen(app(s,pl,m),pl,r)==L)out.push({...m,d})}
+  if(L==1&&dc.length==2&&dc[0]!=dc[1]){const h=Math.max(...dc);if(out.some(o=>o.d==h))out=out.filter(o=>o.d==h)}
+  return out;
+}
+
+/* ---- Bilgisayar ---- */
+const pip=(s,pl)=>{let t=s.bar[pl]*25;for(let i=1;i<=24;i++)t+=cnt(s,pl,i)*(pl?25-i:i);return t};
+function ev(s,pl){
+  const o=1-pl;let v=pip(s,o)-pip(s,pl)+(s.off[pl]-s.off[o])*10+s.bar[o]*22-s.bar[pl]*28;
+  for(let i=1;i<=24;i++){const c=cnt(s,pl,i);if(c==1)v-=7;else if(c>1){v+=3;if(pl?i>18:i<7)v+=3}}
+  return v;
+}
+function pick(s,pl,dc){
+  let best=null,bv=-1e9;
+  for(const m of legal(s,pl,dc)){
+    const s1=app(s,pl,m),r=rm(dc,m.d),L2=r.length?legal(s1,pl,r):[];
+    let v=L2.length?Math.max(...L2.map(n=>ev(app(s1,pl,n),pl))):ev(s1,pl);
+    v+=Math.random()*2;if(v>bv){bv=v;best=m}
+  }
+  return best;
+}
+
+/* ---- Oyun akışı ---- */
+function newGame(){gid++;st=init();turn=Math.random()<.5?0:1;dice=[];diceAll=[];phase="roll";sel=null;LM=[];hist=[];over=false;msg="";render();next()}
+function next(){if(!over&&!human())later(roll,900)}
+function roll(){
+  if(phase!="roll"||over)return;
+  const a=rnd(),b=rnd();diceAll=a==b?[a,a,a,a]:[a,b];dice=diceAll.slice();phase="move";hist=[];calc();
+}
+function calc(){
+  sel=null;LM=legal(st,turn,dice);
+  if(!LM.length){phase="wait";msg=NAME()[turn]+": oynanacak hamle yok";render();later(endTurn,1600);return}
+  msg="";render();if(!human())later(aiStep,800);
+}
+function aiStep(){if(over||phase!="move"||human()||!LM.length)return;doMove(pick(st,turn,dice))}
+function doMove(m){
+  hist.push({st,dice});st=app(st,turn,m);dice=rm(dice,m.d);
+  if(st.off[turn]==15)return win();
+  if(!dice.length){phase="wait";sel=null;LM=[];render();later(endTurn,600)}else calc();
+}
+function endTurn(){turn=1-turn;phase="roll";dice=[];diceAll=[];LM=[];hist=[];sel=null;msg="";render();next()}
+function win(){
+  over=true;phase="over";const pts=st.off[1-turn]==0?2:1;score[turn]+=pts;
+  msg=NAME()[turn]+" kazandı"+(pts==2?" (mars, 2 puan)":"")+"!";sel=null;LM=[];render();
+}
+function undo(){if(phase!="move"||!human()||!hist.length)return;({st,dice}=hist.pop());calc()}
+function click(k){
+  if(over||phase!="move"||!human())return;
+  if(sel!==null){const ms=LM.filter(m=>m.f==sel&&m.t==k).sort((a,b)=>a.d-b.d);if(ms.length)return doMove(ms[0])}
+  sel=(k!="o"&&LM.some(m=>m.f==k))?k:null;render();
+}
+
+/* ---- Çizim ---- */
+function pos(n){return n>=19?{x:360+50*(n-19),top:1}:n>=13?{x:20+50*(n-13),top:1}:n>=7?{x:20+50*(12-n),top:0}:{x:360+50*(6-n),top:0}}
+const ck=(x,y,pl,hl)=>`<circle cx="${x}" cy="${y}" r="18" fill="${pl?"#3a2216":"#f1e7d0"}" stroke="${hl?"#ffd36b":pl?"#1a0f08":"#b9a77d"}" stroke-width="${hl?4:2}"/><circle cx="${x}" cy="${y}" r="11" fill="none" stroke="${pl?"#7a5a38":"#cdbb92"}"/>`;
+const PIPS=[[5],[1,9],[1,5,9],[1,3,7,9],[1,3,5,7,9],[1,3,4,6,7,9]];
+const die=(d,on)=>`<svg class="d${on?"":" used"}" viewBox="0 0 44 44"><rect x="2" y="2" width="40" height="40" rx="8" fill="#f1e7d0" stroke="#b9a77d"/>${PIPS[d-1].map(n=>`<circle cx="${11+11*((n-1)%3)}" cy="${11+11*(((n-1)/3)|0)}" r="3.6" fill="#34210f"/>`).join("")}</svg>`;
+function render(){
+  const hum=human()&&!over,act=hum&&phase=="move",nm=NAME();
+  const tg=new Set(act&&sel!==null?LM.filter(m=>m.f==sel).map(m=>m.t):[]);
+  const src=new Set(act?LM.map(m=>m.f):[]);
+  let s='<rect width="760" height="540" rx="16" fill="#5b3a22"/><rect x="20" y="20" width="300" height="500" fill="#34210f"/><rect x="360" y="20" width="300" height="500" fill="#34210f"/><rect x="672" y="20" width="70" height="500" fill="#34210f"/>';
+  for(let n=1;n<=24;n++){
+    const{x,top}=pos(n),y0=top?20:520,y1=top?220:320,pg=`${x},${y0} ${x+50},${y0} ${x+25},${y1}`;
+    s+=`<polygon points="${pg}" fill="${n%2?"#1c6b66":"#d9c9a3"}"/>`;
+    if(tg.has(n))s+=`<polygon points="${pg}" fill="#ffd36b" opacity=".65"/>`;
+  }
+  for(let n=1;n<=24;n++){
+    const v=st.p[n];if(!v)continue;
+    const{x,top}=pos(n),k=Math.abs(v),pl=v>0?0:1,sp=k>5?162/(k-1):38;
+    for(let i=0;i<k;i++)s+=ck(x+25,top?39+i*sp:501-i*sp,pl,i==k-1&&(src.has(n)||sel===n));
+  }
+  if(sel==="b")s+='<rect x="320" y="20" width="40" height="500" fill="#ffd36b" opacity=".25"/>';
+  for(let i=0;i<st.bar[1];i++)s+=ck(340,250-i*38,1,act&&turn==1&&src.has("b")&&i==st.bar[1]-1);
+  for(let i=0;i<st.bar[0];i++)s+=ck(340,290+i*38,0,act&&turn==0&&src.has("b")&&i==st.bar[0]-1);
+  if(tg.has("o"))s+='<rect x="672" y="20" width="70" height="500" fill="#ffd36b" opacity=".35"/>';
+  for(let i=0;i<st.off[0];i++)s+=`<rect x="680" y="${511-i*9}" width="54" height="7" rx="2" fill="#f1e7d0" stroke="#b9a77d"/>`;
+  for(let i=0;i<st.off[1];i++)s+=`<rect x="680" y="${28+i*9}" width="54" height="7" rx="2" fill="#3a2216" stroke="#1a0f08"/>`;
+  for(let n=1;n<=24;n++){const{x,top}=pos(n);s+=`<rect class="hit" data-k="${n}" x="${x}" y="${top?20:320}" width="50" height="200"/>`}
+  s+='<rect class="hit" data-k="b" x="320" y="20" width="40" height="500"/><rect class="hit" data-k="o" x="672" y="20" width="70" height="500"/>';
+  $("#b").innerHTML=s;
+
+  let left=dice.slice();
+  $("#dice").innerHTML=diceAll.map(d=>{const i=left.indexOf(d),on=i>=0;if(on)left.splice(i,1);return die(d,on)}).join("");
+  $("#status").textContent=msg||(phase=="roll"?(hum?nm[turn]+": zar at":nm[turn]+" zar atıyor…"):phase=="wait"?"…":act&&st.bar[turn]?nm[turn]+": önce bardaki pulu oyuna sok":hum?nm[turn]+": bir pul seç, sonra gideceği yeri seç":nm[turn]+" düşünüyor…");
+  $("#score").textContent=`${nm[0]} ${score[0]} – ${score[1]} ${nm[1]}`;
+  $("#roll").disabled=!(hum&&phase=="roll");
+  $("#undo").disabled=!(act&&hist.length);
+  $("#md").textContent=mode=="ai"?"İki kişilik oyna":"Bilgisayara karşı oyna";
+}
+$("#b").addEventListener("click",e=>{const k=e.target.dataset.k;if(k!==undefined)click(k=="b"||k=="o"?k:+k)});
+$("#roll").onclick=()=>{if(human()&&phase=="roll")roll()};
+$("#undo").onclick=undo;$("#nw").onclick=newGame;
+$("#md").onclick=()=>{mode=mode=="ai"?"2p":"ai";score=[0,0];newGame()};
+newGame();
+</script>
+</body>
+</html>
